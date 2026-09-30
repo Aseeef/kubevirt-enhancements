@@ -70,9 +70,9 @@ KubeVirt live migration relies on NVIDIA's underlying support, which has the fol
 * **Guest Drivers:** Must be compatible with the host Virtual GPU Manager.
 * **Limitations:** Migration will fail for GPUs with a GPU System Processor (GSP) or if the guest has CUDA unified memory, debuggers, or profilers enabled.
 
-For Alpha, KubeVirt requires identical Virtual GPU Manager versions and ECC settings across all nodes to satisfy the strictest NVIDIA requirements. This simplifies scheduling and will be addressed during Beta.
+[VEP 141](https://github.com/kubevirt/enhancements/issues/141) introduces a feature gate in KubeVirt, TargetSideMigrationHooks, to register and write QEMU hooks for the target `virt-launcher`. We will use this new infrastructure to mutate the domain XML with the updated mdev UUID, which will be the one assigned to the target `virt-launcher` by `gpu.CreateHostDevices()` in `manager.go`. vGPU live migration is gated by `MDevVGPULiveMigration` and requires the TargetSideMigrationHooks feature gate.
 
-[VEP 141](https://github.com/kubevirt/enhancements/issues/141) introduces a feature gate in KubeVirt, TargetSideMigrationHooks, to register and write QEMU hooks for the target `virt-launcher`. We will use this new infrastructure to mutate the domain XML with the updated mdev UUID, which will be the one assigned to the target `virt-launcher` by `gpu.CreateHostDevices()` in `manager.go`. VGPU live migration will only be available with the TargetSideMigrationHooks feature gate enabled. 
+> Note: Earlier versions of VEP implementation used `VGPULiveMigration` as the feature gate name. 
 
 Once the destination XML contains the correct fields, the live migration can begin. Libvirt/QEMU already support vGPU live migration for mdev (since Libvirt 8.6.0 and QEMU 8.1.0) and will do the actual migration, so no further work is needed by KubeVirt to migrate the vGPU. Some migration configs at the Libvirt/QEMU level, such as the migration method or downtime limit, may be necessary however.
 
@@ -100,6 +100,18 @@ XML snippet after hook (address uuid updated):
 ```
 
 **Failed migrations:** Cleanup will be performed by existing code and by code introduced in [16212](https://github.com/kubevirt/kubevirt/pull/16212).
+
+### Scheduling
+
+Alpha leaves Virtual GPU Manager compatibility and ECC configuration to the cluster admin. KubeVirt does not enforce the NVIDIA requirements above.
+
+In Beta, KubeVirt schedules migrations on the Virtual GPU Manager version. It adds a `kubevirt.io/nvidia-vgpu-host-driver-version` label to nodes that support NVIDIA vGPUs. The value is read from `/sys/module/nvidia_vgpu_vfio/version`, the current NVIDIA vGPU host driver version. Matching that version is a scheduling preference, not a hard requirement. This is because on some distributions, such as RHEL, live migration between different Virtual GPU Manager versions while on other distributions it is not supported.
+
+A generic `kubevirt.io/vgpu-host-driver-version` label was considered and not used:
+* A cluster with both NVIDIA and AMD nodes would compare two different versioning schemes under one label.
+* It may be possible for a single host to expose both NVIDIA and AMD vGPUs at once.
+
+GA adds ECC memory configuration to scheduling. Encoding ECC into Kubernetes scheduling is difficult without DRA. DRA already supports mdev GPUs, but NVIDIA's DRA drivers do not support vGPUs yet (planned for Q1 2027). KubeVirt defers the ECC scheduling logic until then. Until that lands, the ECC requirement stays documented for cluster admins to manage.
 
 ## API Examples
 
@@ -140,7 +152,7 @@ N/A
 
 ### Beta
 
-* KubeVirt will take hypervisor OS, Virtual GPU Manager version, and ECC configuration into account when scheduling migrations, relaxing the identical version requirement where NVIDIA allows (e.g., RHEL KVM 9.6+).
+* Schedule migrations using the Virtual GPU Manager version.
 * Allow migration for VMs with multiple vGPUs.
 * Test migration alongside VEP 248 which added a stall detector (relevant for vGPU Migration since w/o VEP 248, migration cannot succeed unless we enable `AllowWorkloadDisruption`)
 * E2E Tests
@@ -148,4 +160,5 @@ N/A
 
 ### GA
 
+* Schedule migrations using ECC memory configuration.
 * Needs [VEP 141](https://github.com/kubevirt/enhancements/issues/141) to be in GA.
